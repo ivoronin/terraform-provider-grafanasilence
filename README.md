@@ -4,6 +4,7 @@ Terraform provider for managing Grafana Alertmanager silences
 
 [![Test](https://github.com/ivoronin/terraform-provider-grafanasilence/actions/workflows/test.yml/badge.svg)](https://github.com/ivoronin/terraform-provider-grafanasilence/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/ivoronin/terraform-provider-grafanasilence)](https://github.com/ivoronin/terraform-provider-grafanasilence/releases)
+[![Terraform Registry](https://img.shields.io/badge/terraform-registry-blueviolet?logo=terraform)](https://registry.terraform.io/providers/ivoronin/grafanasilence/latest)
 
 [Overview](#overview) · [Features](#features) · [Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Requirements](#requirements) · [License](#license)
 
@@ -45,21 +46,18 @@ provider "grafanasilence" {
 }
 
 resource "grafanasilence_silence" "maintenance" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
-  created_by = "terraform"
-  comment    = "Scheduled maintenance window"
+  starts_at = "2026-03-01T00:00:00Z"
+  ends_at   = "2026-03-01T06:00:00Z"
+  comment   = "Scheduled maintenance window"
 
   matchers {
-    name     = "alertname"
-    value    = "HighMemoryUsage"
-    is_regex = false
+    name  = "alertname"
+    value = "HighMemoryUsage"
   }
 
   matchers {
-    name     = "env"
-    value    = "staging"
-    is_regex = false
+    name  = "env"
+    value = "staging"
   }
 }
 ```
@@ -68,14 +66,12 @@ Using `duration` instead of `ends_at` (`starts_at` defaults to now):
 
 ```hcl
 resource "grafanasilence_silence" "deployment" {
-  duration   = "6h"
-  created_by = "terraform"
-  comment    = "Deployment silence window"
+  duration = "6h"
+  comment  = "Deployment silence window"
 
   matchers {
-    name     = "alertname"
-    value    = "HighErrorRate"
-    is_regex = false
+    name  = "alertname"
+    value = "HighErrorRate"
   }
 }
 ```
