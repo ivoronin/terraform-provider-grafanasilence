@@ -14,10 +14,9 @@ Manages a Grafana Alertmanager silence.
 
 ```terraform
 resource "grafanasilence_silence" "maintenance" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
-  created_by = "terraform"
-  comment    = "Scheduled maintenance window"
+  starts_at = "2026-03-01T00:00:00Z"
+  ends_at   = "2026-03-01T06:00:00Z"
+  comment   = "Scheduled maintenance window"
 
   matchers {
     name     = "alertname"
@@ -34,9 +33,8 @@ resource "grafanasilence_silence" "maintenance" {
 
 # Using duration instead of ends_at (starts_at defaults to now)
 resource "grafanasilence_silence" "deployment" {
-  duration   = "6h"
-  created_by = "terraform"
-  comment    = "Deployment silence window"
+  duration = "6h"
+  comment  = "Deployment silence window"
 
   matchers {
     name     = "alertname"
@@ -52,10 +50,10 @@ resource "grafanasilence_silence" "deployment" {
 ### Required
 
 - `comment` (String) Reason for the silence.
-- `created_by` (String) Author of the silence.
 
 ### Optional
 
+- `created_by` (String) Author of the silence. Defaults to "terraform".
 - `duration` (String) Duration of the silence (e.g. "6h", "30m"). Exactly one of ends_at or duration must be set.
 - `ends_at` (String) End time in RFC3339 format. Exactly one of ends_at or duration must be set.
 - `matchers` (Block List) Matchers that determine which alerts are silenced. (see [below for nested schema](#nestedblock--matchers))

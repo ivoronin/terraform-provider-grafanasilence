@@ -18,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -91,8 +92,10 @@ func silenceAttributes() map[string]schema.Attribute {
 			},
 		},
 		"created_by": schema.StringAttribute{
-			Description: "Author of the silence.",
-			Required:    true,
+			Description: "Author of the silence. Defaults to \"terraform\".",
+			Optional:    true,
+			Computed:    true,
+			Default:     stringdefault.StaticString("terraform"),
 			PlanModifiers: []planmodifier.String{
 				replaceWhenExpired(),
 			},
