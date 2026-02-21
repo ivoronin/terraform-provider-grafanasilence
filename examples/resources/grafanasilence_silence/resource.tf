@@ -4,15 +4,13 @@ resource "grafanasilence_silence" "maintenance" {
   comment   = "Scheduled maintenance window"
 
   matchers {
-    name     = "alertname"
-    value    = "HighMemoryUsage"
-    is_regex = false
+    name  = "alertname"
+    value = "HighMemoryUsage"
   }
 
   matchers {
-    name     = "env"
-    value    = "staging"
-    is_regex = false
+    name  = "env"
+    value = "staging"
   }
 }
 
@@ -22,8 +20,7 @@ resource "grafanasilence_silence" "deployment" {
   comment  = "Deployment silence window"
 
   matchers {
-    name     = "alertname"
-    value    = "HighErrorRate"
-    is_regex = false
+    name  = "alertname"
+    value = "HighErrorRate"
   }
 }

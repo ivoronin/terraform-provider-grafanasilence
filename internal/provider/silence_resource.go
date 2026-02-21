@@ -182,8 +182,10 @@ func matchersBlock() schema.ListNestedBlock {
 					Required:    true,
 				},
 				"is_regex": schema.BoolAttribute{
-					Description: "Whether value is a regex pattern.",
-					Required:    true,
+					Description: "Whether value is a regex pattern. Defaults to false.",
+					Optional:    true,
+					Computed:    true,
+					Default:     booldefault.StaticBool(false),
 					PlanModifiers: []planmodifier.Bool{
 						boolplanmodifier.UseStateForUnknown(),
 					},
