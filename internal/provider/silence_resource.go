@@ -29,7 +29,6 @@ import (
 var (
 	_ resource.Resource                = (*silenceResource)(nil)
 	_ resource.ResourceWithImportState = (*silenceResource)(nil)
-	_ resource.ResourceWithModifyPlan  = (*silenceResource)(nil)
 )
 
 type silenceResource struct {
@@ -145,6 +144,7 @@ func timeAttributes() map[string]schema.Attribute {
 				stringvalidator.ExactlyOneOf(path.MatchRoot("duration")),
 			},
 			PlanModifiers: []planmodifier.String{
+				endsAtFromDuration{},
 				replaceWhenExpired(),
 			},
 		},
@@ -405,31 +405,6 @@ func (r *silenceResource) ImportState(
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
 }
 
-func (r *silenceResource) ModifyPlan(
-	ctx context.Context,
-	req resource.ModifyPlanRequest,
-	resp *resource.ModifyPlanResponse,
-) {
-	// Nothing to do on destroy.
-	if req.Plan.Raw.IsNull() {
-		return
-	}
-
-	// Read starts_at from plan. For creates with omitted starts_at this is
-	// unknown; the actual value is computed later in Create. Deferring avoids
-	// the "inconsistent final plan" error caused by time.Now() drift between
-	// the plan and apply-time re-plan calls.
-	var startsAt timetypes.RFC3339
-
-	resp.Diagnostics.Append(resp.Plan.GetAttribute(ctx, path.Root("starts_at"), &startsAt)...)
-
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	computeEndsAt(ctx, req.Config, &resp.Plan, startsAt, &resp.Diagnostics)
-}
-
 // resolveTimeDefaults fills in unknown starts_at and ends_at values at create
 // time. starts_at defaults to now; ends_at is computed from starts_at + duration.
 func resolveTimeDefaults(plan *silenceResourceModel, diags *diag.Diagnostics) {
@@ -450,43 +425,89 @@ func resolveTimeDefaults(plan *silenceResourceModel, diags *diag.Diagnostics) {
 	}
 }
 
-// computeEndsAt sets ends_at = starts_at + duration when duration is configured
-// and ends_at is not. Skipped when starts_at is unknown (create with omitted
-// starts_at); ends_at will be resolved in Create instead.
-func computeEndsAt(
+// endsAtFromDuration computes ends_at = starts_at + duration during planning.
+type endsAtFromDuration struct{}
+
+func (m endsAtFromDuration) Description(_ context.Context) string {
+	return "Computes ends_at from starts_at and duration when duration is configured."
+}
+
+func (m endsAtFromDuration) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m endsAtFromDuration) PlanModifyString(
 	ctx context.Context,
-	config tfsdk.Config,
-	plan *tfsdk.Plan,
-	startsAt timetypes.RFC3339,
-	diags *diag.Diagnostics,
+	req planmodifier.StringRequest,
+	resp *planmodifier.StringResponse,
 ) {
-	if startsAt.IsNull() || startsAt.IsUnknown() {
+	// ends_at explicitly set in config: let the user's value through.
+	if !req.ConfigValue.IsNull() {
 		return
 	}
 
-	var endsAtConfig timetypes.RFC3339
-
-	diags.Append(config.GetAttribute(ctx, path.Root("ends_at"), &endsAtConfig)...)
-
-	if diags.HasError() || !endsAtConfig.IsNull() {
-		return
-	}
-
+	// duration not set in config: nothing to compute.
 	var duration types.String
 
-	diags.Append(config.GetAttribute(ctx, path.Root("duration"), &duration)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("duration"), &duration)...)
 
-	if diags.HasError() || duration.IsNull() || duration.IsUnknown() {
+	if resp.Diagnostics.HasError() || duration.IsNull() || duration.IsUnknown() {
 		return
 	}
 
-	endTime, timeDiags := addDuration(startsAt, duration.ValueString())
+	// starts_at unknown in plan (create with omitted starts_at): defer to Create.
+	var startsAt timetypes.RFC3339
 
-	diags.Append(timeDiags...)
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("starts_at"), &startsAt)...)
 
-	if !diags.HasError() {
-		diags.Append(plan.SetAttribute(ctx, path.Root("ends_at"), endTime)...)
+	if resp.Diagnostics.HasError() || startsAt.IsUnknown() {
+		return
 	}
+
+	// Duration unchanged from state and state has ends_at: preserve state value
+	// to avoid drift caused by Grafana adjusting startsAt on storage.
+	if endsAt, ok := stateEndsAt(ctx, req.State, req.StateValue, duration, &resp.Diagnostics); ok {
+		resp.PlanValue = endsAt
+
+		return
+	}
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Compute ends_at = starts_at + duration.
+	endTime, diags := addDuration(startsAt, duration.ValueString())
+
+	resp.Diagnostics.Append(diags...)
+
+	if !resp.Diagnostics.HasError() {
+		resp.PlanValue = types.StringValue(endTime.ValueString())
+	}
+}
+
+// stateEndsAt returns the state's ends_at when duration has not changed,
+// allowing the caller to skip recomputation.
+func stateEndsAt(
+	ctx context.Context,
+	state tfsdk.State,
+	stateValue types.String,
+	duration types.String,
+	diags *diag.Diagnostics,
+) (types.String, bool) {
+	if stateValue.IsNull() || stateValue.IsUnknown() {
+		return types.String{}, false
+	}
+
+	var stateDuration types.String
+
+	diags.Append(state.GetAttribute(ctx, path.Root("duration"), &stateDuration)...)
+
+	if diags.HasError() || !duration.Equal(stateDuration) {
+		return types.String{}, false
+	}
+
+	return stateValue, true
 }
 
 // addDuration parses a Go duration string and adds it to the given start time,

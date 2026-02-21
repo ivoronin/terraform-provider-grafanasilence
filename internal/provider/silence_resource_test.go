@@ -26,11 +26,12 @@ var (
 type testServer struct {
 	*httptest.Server
 
-	mu          sync.Mutex
-	silences    map[string]*client.GettableSilence
-	nextID      int
-	autoExpire  bool
-	deleteCalls []string
+	mu            sync.Mutex
+	silences      map[string]*client.GettableSilence
+	nextID        int
+	autoExpire    bool
+	shiftStartsAt bool
+	deleteCalls   []string
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -111,7 +112,13 @@ func (server *testServer) handleCreateSilence(writer http.ResponseWriter, reques
 	}
 
 	// Simulate real Grafana: re-format timestamps with millisecond precision.
+	// When shiftStartsAt is enabled, also simulate Grafana replacing startsAt
+	// with its own time.Now() when the provided value is in the past.
 	startsAt := addMillis(postable.StartsAt)
+	if server.shiftStartsAt {
+		startsAt = shiftTime(postable.StartsAt)
+	}
+
 	endsAt := addMillis(postable.EndsAt)
 
 	server.silences[silenceID] = &client.GettableSilence{
@@ -194,6 +201,18 @@ func addMillis(ts string) string {
 	}
 
 	return t.Format("2006-01-02T15:04:05.000Z07:00")
+}
+
+// shiftTime adds one second to the timestamp, simulating real Grafana behavior
+// where startsAt is replaced with the server's time.Now() when the provided
+// value is in the past.
+func shiftTime(ts string) string {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+
+	return t.Add(time.Second).Format("2006-01-02T15:04:05.000Z07:00")
 }
 
 const testAccSilenceCreateConfig = `
@@ -1103,6 +1122,85 @@ resource "grafanasilence_silence" "test" {
 					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "ends_at",
 						checkTimeNotBefore(before.Add(6*time.Hour))),
 				),
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+// Case 19: Plan stability with duration when Grafana shifts startsAt.
+// Real Grafana replaces startsAt with its own time.Now() when the provided
+// value is in the past. This causes starts_at in state to differ from the
+// value computed by the provider, making starts_at + duration drift from the
+// API's stored ends_at. The second plan must still be empty.
+func TestAccSilencePlanStabilityDurationStartsAtShift(t *testing.T) {
+	server := newTestServer(t)
+	server.shiftStartsAt = true
+	setupTestEnv(t, server)
+
+	config := `
+resource "grafanasilence_silence" "test" {
+  duration   = "6h"
+  comment    = "Plan stability with shifted startsAt"
+
+  matchers {
+    name  = "alertname"
+    value = "TestAlert"
+  }
+}
+`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+// Case 20: Plan stability with explicit ends_at when Grafana shifts startsAt.
+// Same Grafana behavior as Case 19, but with ends_at instead of duration.
+// The second plan must still be empty.
+func TestAccSilencePlanStabilityEndsAtStartsAtShift(t *testing.T) {
+	server := newTestServer(t)
+	server.shiftStartsAt = true
+	setupTestEnv(t, server)
+
+	endsAt := time.Now().Add(6 * time.Hour).UTC().Format(time.RFC3339)
+	config := fmt.Sprintf(`
+resource "grafanasilence_silence" "test" {
+  ends_at = %q
+  comment = "Plan stability with shifted startsAt and explicit ends_at"
+
+  matchers {
+    name  = "alertname"
+    value = "TestAlert"
+  }
+}
+`, endsAt)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
 			},
 			{
 				Config: config,
