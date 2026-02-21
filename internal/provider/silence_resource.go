@@ -7,6 +7,8 @@ import (
 	"maps"
 	"time"
 
+	"math"
+
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -253,7 +255,7 @@ func (r *silenceResource) Create(
 		return
 	}
 
-	got, err := r.client.GetSilence(ctx, newID)
+	got, err := getSilenceWithRetry(ctx, r.client, newID)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading silence after create", err.Error())
 
@@ -344,7 +346,7 @@ func (r *silenceResource) Update(
 		return
 	}
 
-	got, err := r.client.GetSilence(ctx, newID)
+	got, err := getSilenceWithRetry(ctx, r.client, newID)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading silence after update", err.Error())
 
@@ -403,6 +405,37 @@ func (r *silenceResource) ImportState(
 
 	model.update(got)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &model)...)
+}
+
+// getSilenceWithRetry wraps GetSilence with retry-on-not-found logic to handle
+// HA Grafana clusters where PostSilences may return HTTP 202 before the new
+// silence has replicated to all nodes.
+func getSilenceWithRetry(ctx context.Context, c *client.Client, id string) (*client.GettableSilence, error) {
+	const (
+		maxRetries = 10
+		baseDelay  = 200 * time.Millisecond
+		maxDelay   = 5 * time.Second
+	)
+
+	for attempt := range maxRetries {
+		got, err := c.GetSilence(ctx, id)
+		if !errors.Is(err, client.ErrNotFound) {
+			return got, err
+		}
+
+		delay := time.Duration(math.Min(
+			float64(baseDelay)*(math.Pow(2, float64(attempt))),
+			float64(maxDelay),
+		))
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	return nil, client.ErrNotFound
 }
 
 // resolveTimeDefaults fills in unknown starts_at and ends_at values at create

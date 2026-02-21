@@ -32,6 +32,8 @@ type testServer struct {
 	autoExpire    bool
 	shiftStartsAt bool
 	deleteCalls   []string
+	getDelay      int
+	getCounts     map[string]int
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -41,6 +43,7 @@ func newTestServer(t *testing.T) *testServer {
 		silences:   map[string]*client.GettableSilence{},
 		nextID:     1,
 		autoExpire: true,
+		getCounts:  map[string]int{},
 	}
 
 	mux := http.NewServeMux()
@@ -153,6 +156,15 @@ func (server *testServer) handleGetSilence(writer http.ResponseWriter, request *
 		http.Error(writer, "not found", http.StatusNotFound)
 
 		return
+	}
+
+	if server.getDelay > 0 {
+		server.getCounts[silenceID]++
+		if server.getCounts[silenceID] <= server.getDelay {
+			http.Error(writer, "not found", http.StatusNotFound)
+
+			return
+		}
 	}
 
 	// Auto-expire: if endsAt is in the past, return as expired (simulates real Grafana)
@@ -1209,6 +1221,39 @@ resource "grafanasilence_silence" "test" {
 						plancheck.ExpectEmptyPlan(),
 					},
 				},
+			},
+		},
+	})
+}
+
+// Case 21: HA replication delay - GET returns 404 for first N requests after create.
+func TestAccSilenceHAReplicationDelay(t *testing.T) {
+	server := newTestServer(t)
+	server.getDelay = 2
+	setupTestEnv(t, server)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  ends_at    = "2026-03-01T06:00:00Z"
+  created_by = "terraform"
+  comment    = "HA replication delay test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
+				),
 			},
 		},
 	})
