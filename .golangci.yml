@@ -1,0 +1,27 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - gochecknoglobals
+    - gosec
+    - ireturn
+    - mnd
+    - paralleltest
+    - tagliatelle
+    - wrapcheck
+    - wsl
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - forcetypeassert
