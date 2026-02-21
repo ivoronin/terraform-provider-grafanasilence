@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
@@ -81,7 +82,7 @@ func (r *silenceResource) Schema(
 }
 
 func silenceAttributes() map[string]schema.Attribute {
-	return map[string]schema.Attribute{
+	attrs := map[string]schema.Attribute{
 		"id": schema.StringAttribute{
 			Description: "UUID assigned by the Alertmanager API.",
 			Computed:    true,
@@ -89,6 +90,37 @@ func silenceAttributes() map[string]schema.Attribute {
 				stringplanmodifier.UseStateForUnknown(),
 			},
 		},
+		"created_by": schema.StringAttribute{
+			Description: "Author of the silence.",
+			Required:    true,
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+			},
+		},
+		"comment": schema.StringAttribute{
+			Description: "Reason for the silence.",
+			Required:    true,
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+			},
+		},
+		"status": schema.StringAttribute{
+			Description: "Current state: active, pending, or expired.",
+			Computed:    true,
+		},
+		"updated_at": schema.StringAttribute{
+			Description: "Last updated time from API.",
+			Computed:    true,
+		},
+	}
+
+	maps.Copy(attrs, timeAttributes())
+
+	return attrs
+}
+
+func timeAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
 		"starts_at": schema.StringAttribute{
 			Description: "Start time in RFC3339 format. " +
 				"Defaults to the current time when omitted.",
@@ -123,28 +155,6 @@ func silenceAttributes() map[string]schema.Attribute {
 			PlanModifiers: []planmodifier.String{
 				replaceWhenExpired(),
 			},
-		},
-		"created_by": schema.StringAttribute{
-			Description: "Author of the silence.",
-			Required:    true,
-			PlanModifiers: []planmodifier.String{
-				replaceWhenExpired(),
-			},
-		},
-		"comment": schema.StringAttribute{
-			Description: "Reason for the silence.",
-			Required:    true,
-			PlanModifiers: []planmodifier.String{
-				replaceWhenExpired(),
-			},
-		},
-		"status": schema.StringAttribute{
-			Description: "Current state: active, pending, or expired.",
-			Computed:    true,
-		},
-		"updated_at": schema.StringAttribute{
-			Description: "Last updated time from API.",
-			Computed:    true,
 		},
 	}
 }
