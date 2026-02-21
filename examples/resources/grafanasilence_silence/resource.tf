@@ -16,3 +16,17 @@ resource "grafanasilence_silence" "maintenance" {
     is_regex = false
   }
 }
+
+# Using duration instead of ends_at
+resource "grafanasilence_silence" "deployment" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  duration   = "6h"
+  created_by = "terraform"
+  comment    = "Deployment silence window"
+
+  matchers {
+    name     = "alertname"
+    value    = "HighErrorRate"
+    is_regex = false
+  }
+}
