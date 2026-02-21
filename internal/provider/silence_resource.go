@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -36,6 +37,7 @@ type silenceResourceModel struct {
 	ID        types.String      `tfsdk:"id"`
 	StartsAt  timetypes.RFC3339 `tfsdk:"starts_at"`
 	EndsAt    timetypes.RFC3339 `tfsdk:"ends_at"`
+	Duration  types.String      `tfsdk:"duration"`
 	CreatedBy types.String      `tfsdk:"created_by"`
 	Comment   types.String      `tfsdk:"comment"`
 	Matchers  []matcherModel    `tfsdk:"matchers"`
@@ -87,9 +89,26 @@ func (r *silenceResource) Schema(
 				},
 			},
 			"ends_at": schema.StringAttribute{
-				Description: "End time in RFC3339 format.",
-				CustomType:  timetypes.RFC3339Type{},
-				Required:    true,
+				Description: "End time in RFC3339 format. " +
+					"Exactly one of ends_at or duration must be set.",
+				CustomType: timetypes.RFC3339Type{},
+				Optional:   true,
+				Computed:   true,
+				Validators: []validator.String{
+					stringvalidator.ExactlyOneOf(path.MatchRoot("duration")),
+				},
+				PlanModifiers: []planmodifier.String{
+					replaceWhenExpired(),
+					computeEndsAtFromDuration(),
+				},
+			},
+			"duration": schema.StringAttribute{
+				Description: "Duration of the silence (e.g. \"6h\", \"30m\"). " +
+					"Exactly one of ends_at or duration must be set.",
+				Optional: true,
+				Validators: []validator.String{
+					durationValidator{},
+				},
 				PlanModifiers: []planmodifier.String{
 					replaceWhenExpired(),
 				},
@@ -464,4 +483,119 @@ func isExpired(
 	}
 
 	return status.ValueString() == "expired"
+}
+
+// durationValidator validates that a string is a valid, positive Go duration.
+type durationValidator struct{}
+
+func (v durationValidator) Description(_ context.Context) string {
+	return "value must be a valid positive duration (e.g. \"6h\", \"30m\", \"1h30m\")"
+}
+
+func (v durationValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v durationValidator) ValidateString(
+	_ context.Context,
+	req validator.StringRequest,
+	resp *validator.StringResponse,
+) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	d, err := time.ParseDuration(req.ConfigValue.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid duration",
+			fmt.Sprintf("Cannot parse %q as a duration: %s", req.ConfigValue.ValueString(), err),
+		)
+
+		return
+	}
+
+	if d <= 0 {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid duration",
+			"Duration must be positive",
+		)
+	}
+}
+
+// computeEndsAtFromDuration returns a plan modifier that computes ends_at
+// from starts_at + duration when the user specifies duration instead of ends_at.
+func computeEndsAtFromDuration() planmodifier.String {
+	return endsAtFromDurationModifier{}
+}
+
+type endsAtFromDurationModifier struct{}
+
+func (m endsAtFromDurationModifier) Description(_ context.Context) string {
+	return "Computes ends_at from starts_at + duration when duration is set."
+}
+
+func (m endsAtFromDurationModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m endsAtFromDurationModifier) PlanModifyString(
+	ctx context.Context,
+	req planmodifier.StringRequest,
+	resp *planmodifier.StringResponse,
+) {
+	// If ends_at is configured by the user, do nothing.
+	if !req.ConfigValue.IsNull() {
+		return
+	}
+
+	// Read duration from config.
+	var duration types.String
+
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("duration"), &duration)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if duration.IsNull() || duration.IsUnknown() {
+		return
+	}
+
+	// Read starts_at from config.
+	var startsAt timetypes.RFC3339
+
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("starts_at"), &startsAt)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if startsAt.IsNull() || startsAt.IsUnknown() {
+		return
+	}
+
+	startTime, diags := startsAt.ValueRFC3339Time()
+
+	resp.Diagnostics.Append(diags...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	d, err := time.ParseDuration(duration.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			req.Path,
+			"Invalid duration",
+			fmt.Sprintf("Cannot parse duration: %s", err),
+		)
+
+		return
+	}
+
+	endTime := startTime.Add(d).UTC().Format(time.RFC3339)
+	resp.PlanValue = timetypes.NewRFC3339ValueMust(endTime).StringValue
 }

@@ -817,3 +817,145 @@ resource "grafanasilence_silence" "test" {
 		},
 	})
 }
+
+// Case 11: Create with duration - ends_at should be computed from starts_at + duration.
+func TestAccSilenceCreateWithDuration(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  duration   = "6h"
+  created_by = "terraform"
+  comment    = "Duration test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "duration", "6h"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
+				),
+			},
+		},
+	})
+}
+
+// Case 12: Update duration - ends_at should change accordingly.
+func TestAccSilenceUpdateDuration(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  duration   = "6h"
+  created_by = "terraform"
+  comment    = "Duration update test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+				),
+			},
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  duration   = "12h"
+  created_by = "terraform"
+  comment    = "Duration update test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T12:00:00Z"),
+				),
+			},
+		},
+	})
+}
+
+// Case 13: Conflict - both ends_at and duration set.
+func TestAccSilenceConflictEndsAtAndDuration(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  ends_at    = "2026-03-01T06:00:00Z"
+  duration   = "6h"
+  created_by = "terraform"
+  comment    = "Conflict test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
+			},
+		},
+	})
+}
+
+// Case 14: Missing - neither ends_at nor duration set.
+func TestAccSilenceMissingEndsAtAndDuration(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  starts_at  = "2026-03-01T00:00:00Z"
+  created_by = "terraform"
+  comment    = "Missing test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
+			},
+		},
+	})
+}
