@@ -410,7 +410,9 @@ func (r *silenceResource) ImportState(
 // getSilenceWithRetry wraps GetSilence with retry-on-not-found logic to handle
 // HA Grafana clusters where PostSilences may return HTTP 202 before the new
 // silence has replicated to all nodes.
-func getSilenceWithRetry(ctx context.Context, c *client.Client, id string) (*client.GettableSilence, error) {
+func getSilenceWithRetry(
+	ctx context.Context, apiClient *client.Client, silenceID string,
+) (*client.GettableSilence, error) {
 	const (
 		maxRetries = 10
 		baseDelay  = 200 * time.Millisecond
@@ -418,7 +420,7 @@ func getSilenceWithRetry(ctx context.Context, c *client.Client, id string) (*cli
 	)
 
 	for attempt := range maxRetries {
-		got, err := c.GetSilence(ctx, id)
+		got, err := apiClient.GetSilence(ctx, silenceID)
 		if !errors.Is(err, client.ErrNotFound) {
 			return got, err
 		}
