@@ -12,11 +12,16 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/ivoronin/terraform-provider-grafanasilence/internal/client"
 )
 
-var errUnexpectedDeleteCount = errors.New("unexpected delete call count")
+var (
+	errUnexpectedDeleteCount = errors.New("unexpected delete call count")
+	errTimeTooEarly          = errors.New("time is before expected lower bound")
+	errInvalidTime           = errors.New("invalid RFC3339 time")
+)
 
 type testServer struct {
 	*httptest.Server
@@ -958,4 +963,172 @@ resource "grafanasilence_silence" "test" {
 			},
 		},
 	})
+}
+
+// Case 15: Create with duration only (no starts_at) - starts_at defaults to now, ends_at computed.
+func TestAccSilenceCreateWithDurationNoStartsAt(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	before := time.Now().UTC().Add(-1 * time.Second)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  duration   = "6h"
+  created_by = "terraform"
+  comment    = "Duration without starts_at"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "duration", "6h"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
+					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "starts_at",
+						checkTimeNotBefore(before)),
+					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "ends_at",
+						checkTimeNotBefore(before.Add(6*time.Hour))),
+				),
+			},
+		},
+	})
+}
+
+// Case 16: Create with ends_at only (no starts_at) - starts_at defaults to now.
+func TestAccSilenceCreateWithEndsAtNoStartsAt(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	before := time.Now().UTC().Add(-1 * time.Second)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  ends_at    = "2026-03-01T06:00:00Z"
+  created_by = "terraform"
+  comment    = "EndsAt without starts_at"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
+					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "starts_at",
+						checkTimeNotBefore(before)),
+				),
+			},
+		},
+	})
+}
+
+// Case 17: Missing starts_at, ends_at, and duration - validation error.
+func TestAccSilenceMissingAllTimeAttrs(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "grafanasilence_silence" "test" {
+  created_by = "terraform"
+  comment    = "Missing all time attrs"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`,
+				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
+			},
+		},
+	})
+}
+
+// Case 18: Plan stability with omitted starts_at.
+// Verifies that omitting starts_at does not cause "inconsistent final plan"
+// errors. The computed starts_at is deferred to Create, so the plan contains
+// unknown values that are stable across plan/apply re-plan cycles.
+func TestAccSilencePlanStabilityOmittedStartsAt(t *testing.T) {
+	server := newTestServer(t)
+	setupTestEnv(t, server)
+
+	config := `
+resource "grafanasilence_silence" "test" {
+  duration   = "6h"
+  created_by = "terraform"
+  comment    = "Plan stability test"
+
+  matchers {
+    name     = "alertname"
+    value    = "TestAlert"
+    is_regex = false
+  }
+}
+`
+
+	before := time.Now().UTC().Add(-1 * time.Second)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
+					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "starts_at",
+						checkTimeNotBefore(before)),
+					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "ends_at",
+						checkTimeNotBefore(before.Add(6*time.Hour))),
+				),
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+// checkTimeNotBefore returns a TestCheckResourceAttrWith check function
+// that verifies a timestamp is not before the given lower bound.
+func checkTimeNotBefore(lowerBound time.Time) func(string) error {
+	return func(value string) error {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return fmt.Errorf("%w: %q: %w", errInvalidTime, value, err)
+		}
+
+		if parsed.Before(lowerBound) {
+			return fmt.Errorf("%w: %s is before %s", errTimeTooEarly, parsed, lowerBound)
+		}
+
+		return nil
+	}
 }

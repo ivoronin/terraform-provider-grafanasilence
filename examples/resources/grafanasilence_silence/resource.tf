@@ -17,9 +17,8 @@ resource "grafanasilence_silence" "maintenance" {
   }
 }
 
-# Using duration instead of ends_at
+# Using duration instead of ends_at (starts_at defaults to now)
 resource "grafanasilence_silence" "deployment" {
-  starts_at  = "2026-03-01T00:00:00Z"
   duration   = "6h"
   created_by = "terraform"
   comment    = "Deployment silence window"

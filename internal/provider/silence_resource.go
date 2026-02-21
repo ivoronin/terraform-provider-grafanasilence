@@ -28,6 +28,7 @@ import (
 var (
 	_ resource.Resource                = (*silenceResource)(nil)
 	_ resource.ResourceWithImportState = (*silenceResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*silenceResource)(nil)
 )
 
 type silenceResource struct {
@@ -121,11 +122,14 @@ func silenceAttributes() map[string]schema.Attribute {
 func timeAttributes() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"starts_at": schema.StringAttribute{
-			Description: "Start time in RFC3339 format.",
-			CustomType:  timetypes.RFC3339Type{},
-			Required:    true,
+			Description: "Start time in RFC3339 format. " +
+				"Defaults to the current time when omitted.",
+			CustomType: timetypes.RFC3339Type{},
+			Optional:   true,
+			Computed:   true,
 			PlanModifiers: []planmodifier.String{
 				replaceWhenExpired(),
+				stringplanmodifier.UseStateForUnknown(),
 			},
 		},
 		"ends_at": schema.StringAttribute{
@@ -139,7 +143,6 @@ func timeAttributes() map[string]schema.Attribute {
 			},
 			PlanModifiers: []planmodifier.String{
 				replaceWhenExpired(),
-				computeEndsAtFromDuration(),
 			},
 		},
 		"duration": schema.StringAttribute{
@@ -227,6 +230,12 @@ func (r *silenceResource) Create(
 	var plan silenceResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resolveTimeDefaults(&plan, &resp.Diagnostics)
 
 	if resp.Diagnostics.HasError() {
 		return
@@ -408,8 +417,8 @@ func (model *silenceResourceModel) silence() client.Silence {
 
 func (model *silenceResourceModel) update(silence *client.GettableSilence) {
 	model.ID = types.StringValue(silence.ID)
-	model.StartsAt = timetypes.NewRFC3339ValueMust(silence.StartsAt)
-	model.EndsAt = timetypes.NewRFC3339ValueMust(silence.EndsAt)
+	model.StartsAt = normalizeRFC3339(silence.StartsAt)
+	model.EndsAt = normalizeRFC3339(silence.EndsAt)
 	model.CreatedBy = types.StringValue(silence.CreatedBy)
 	model.Comment = types.StringValue(silence.Comment)
 	model.Status = types.StringValue(string(silence.Status.State))
@@ -419,6 +428,18 @@ func (model *silenceResourceModel) update(silence *client.GettableSilence) {
 	for idx, clientMatcher := range silence.Matchers {
 		model.Matchers[idx] = newMatcherModel(clientMatcher)
 	}
+}
+
+// normalizeRFC3339 re-formats an RFC3339 timestamp to second precision.
+// The Grafana API may return timestamps with fractional seconds (e.g. ".000Z")
+// that would cause spurious plan diffs against provider-computed values.
+func normalizeRFC3339(timestamp string) timetypes.RFC3339 {
+	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		return timetypes.NewRFC3339ValueMust(timestamp)
+	}
+
+	return timetypes.NewRFC3339ValueMust(parsed.UTC().Format(time.RFC3339))
 }
 
 func (matcherMdl matcherModel) matcher() client.Matcher {
@@ -539,70 +560,56 @@ func (v durationValidator) ValidateString(
 	}
 }
 
-// computeEndsAtFromDuration returns a plan modifier that computes ends_at
-// from starts_at + duration when the user specifies duration instead of ends_at.
-func computeEndsAtFromDuration() planmodifier.String {
-	return endsAtFromDurationModifier{}
-}
-
-type endsAtFromDurationModifier struct{}
-
-func (m endsAtFromDurationModifier) Description(_ context.Context) string {
-	return "Computes ends_at from starts_at + duration when duration is set."
-}
-
-func (m endsAtFromDurationModifier) MarkdownDescription(ctx context.Context) string {
-	return m.Description(ctx)
-}
-
-func (m endsAtFromDurationModifier) PlanModifyString(
+func (r *silenceResource) ModifyPlan(
 	ctx context.Context,
-	req planmodifier.StringRequest,
-	resp *planmodifier.StringResponse,
+	req resource.ModifyPlanRequest,
+	resp *resource.ModifyPlanResponse,
 ) {
-	// If ends_at is configured by the user, do nothing.
-	if !req.ConfigValue.IsNull() {
+	// Nothing to do on destroy.
+	if req.Plan.Raw.IsNull() {
 		return
 	}
 
-	// Read duration from config.
-	var duration types.String
-
-	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("duration"), &duration)...)
-
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if duration.IsNull() || duration.IsUnknown() {
-		return
-	}
-
-	// Read starts_at from config.
+	// Read starts_at from plan. For creates with omitted starts_at this is
+	// unknown; the actual value is computed later in Create. Deferring avoids
+	// the "inconsistent final plan" error caused by time.Now() drift between
+	// the plan and apply-time re-plan calls.
 	var startsAt timetypes.RFC3339
 
-	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("starts_at"), &startsAt)...)
+	resp.Diagnostics.Append(resp.Plan.GetAttribute(ctx, path.Root("starts_at"), &startsAt)...)
 
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if startsAt.IsNull() || startsAt.IsUnknown() {
+	computeEndsAt(ctx, req.Config, &resp.Plan, startsAt, &resp.Diagnostics)
+}
+
+// resolveTimeDefaults fills in unknown starts_at and ends_at values at create
+// time. starts_at defaults to now; ends_at is computed from starts_at + duration.
+func resolveTimeDefaults(plan *silenceResourceModel, diags *diag.Diagnostics) {
+	if plan.StartsAt.IsUnknown() {
+		plan.StartsAt = timetypes.NewRFC3339ValueMust(
+			time.Now().UTC().Format(time.RFC3339),
+		)
+	}
+
+	if !plan.EndsAt.IsUnknown() || plan.Duration.IsNull() || plan.Duration.IsUnknown() {
 		return
 	}
 
-	startTime, diags := startsAt.ValueRFC3339Time()
+	startTime, timeDiags := plan.StartsAt.ValueRFC3339Time()
 
-	resp.Diagnostics.Append(diags...)
+	diags.Append(timeDiags...)
 
-	if resp.Diagnostics.HasError() {
+	if diags.HasError() {
 		return
 	}
 
-	parsed, err := time.ParseDuration(duration.ValueString())
+	parsed, err := time.ParseDuration(plan.Duration.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddAttributeError(
-			req.Path,
+		diags.AddAttributeError(
+			path.Root("ends_at"),
 			"Invalid duration",
 			fmt.Sprintf("Cannot parse duration: %s", err),
 		)
@@ -610,6 +617,60 @@ func (m endsAtFromDurationModifier) PlanModifyString(
 		return
 	}
 
-	endTime := startTime.Add(parsed).UTC().Format(time.RFC3339)
-	resp.PlanValue = timetypes.NewRFC3339ValueMust(endTime).StringValue
+	plan.EndsAt = timetypes.NewRFC3339ValueMust(
+		startTime.Add(parsed).UTC().Format(time.RFC3339),
+	)
+}
+
+// computeEndsAt sets ends_at = starts_at + duration when duration is configured
+// and ends_at is not. Skipped when starts_at is unknown (create with omitted
+// starts_at); ends_at will be resolved in Create instead.
+func computeEndsAt(
+	ctx context.Context,
+	config tfsdk.Config,
+	plan *tfsdk.Plan,
+	startsAt timetypes.RFC3339,
+	diags *diag.Diagnostics,
+) {
+	if startsAt.IsNull() || startsAt.IsUnknown() {
+		return
+	}
+
+	var endsAtConfig timetypes.RFC3339
+
+	diags.Append(config.GetAttribute(ctx, path.Root("ends_at"), &endsAtConfig)...)
+
+	if diags.HasError() || !endsAtConfig.IsNull() {
+		return
+	}
+
+	var duration types.String
+
+	diags.Append(config.GetAttribute(ctx, path.Root("duration"), &duration)...)
+
+	if diags.HasError() || duration.IsNull() || duration.IsUnknown() {
+		return
+	}
+
+	startTime, timeDiags := startsAt.ValueRFC3339Time()
+
+	diags.Append(timeDiags...)
+
+	if diags.HasError() {
+		return
+	}
+
+	parsed, err := time.ParseDuration(duration.ValueString())
+	if err != nil {
+		diags.AddAttributeError(
+			path.Root("ends_at"),
+			"Invalid duration",
+			fmt.Sprintf("Cannot parse duration: %s", err),
+		)
+
+		return
+	}
+
+	endTime := timetypes.NewRFC3339ValueMust(startTime.Add(parsed).UTC().Format(time.RFC3339))
+	diags.Append(plan.SetAttribute(ctx, path.Root("ends_at"), endTime)...)
 }

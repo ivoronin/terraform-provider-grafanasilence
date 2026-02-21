@@ -17,6 +17,7 @@ This provider manages Grafana Alertmanager silences through Terraform. Silences 
 - Import existing silences by UUID
 - Regex and inequality matchers
 - `duration` attribute as an alternative to `ends_at` (e.g. `"6h"`, `"30m"`)
+- Optional `starts_at` - defaults to current time when omitted
 - Automatic handling of naturally expired silences (no spurious recreation)
 
 ## Installation
@@ -63,11 +64,10 @@ resource "grafanasilence_silence" "maintenance" {
 }
 ```
 
-Using `duration` instead of `ends_at`:
+Using `duration` instead of `ends_at` (`starts_at` defaults to now):
 
 ```hcl
 resource "grafanasilence_silence" "deployment" {
-  starts_at  = "2026-03-01T00:00:00Z"
   duration   = "6h"
   created_by = "terraform"
   comment    = "Deployment silence window"
