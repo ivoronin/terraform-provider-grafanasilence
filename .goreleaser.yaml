@@ -35,6 +35,3 @@ signs:
       - "${signature}"
       - "--detach-sign"
       - "${artifact}"
-
-release:
-  draft: true
