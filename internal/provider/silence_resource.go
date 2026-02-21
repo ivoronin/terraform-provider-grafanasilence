@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-timetypes/timetypes"
@@ -72,72 +73,85 @@ func (r *silenceResource) Schema(
 ) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a Grafana Alertmanager silence.",
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Description: "UUID assigned by the Alertmanager API.",
-				Computed:    true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
-				},
-			},
-			"starts_at": schema.StringAttribute{
-				Description: "Start time in RFC3339 format.",
-				CustomType:  timetypes.RFC3339Type{},
-				Required:    true,
-				PlanModifiers: []planmodifier.String{
-					replaceWhenExpired(),
-				},
-			},
-			"ends_at": schema.StringAttribute{
-				Description: "End time in RFC3339 format. " +
-					"Exactly one of ends_at or duration must be set.",
-				CustomType: timetypes.RFC3339Type{},
-				Optional:   true,
-				Computed:   true,
-				Validators: []validator.String{
-					stringvalidator.ExactlyOneOf(path.MatchRoot("duration")),
-				},
-				PlanModifiers: []planmodifier.String{
-					replaceWhenExpired(),
-					computeEndsAtFromDuration(),
-				},
-			},
-			"duration": schema.StringAttribute{
-				Description: "Duration of the silence (e.g. \"6h\", \"30m\"). " +
-					"Exactly one of ends_at or duration must be set.",
-				Optional: true,
-				Validators: []validator.String{
-					durationValidator{},
-				},
-				PlanModifiers: []planmodifier.String{
-					replaceWhenExpired(),
-				},
-			},
-			"created_by": schema.StringAttribute{
-				Description: "Author of the silence.",
-				Required:    true,
-				PlanModifiers: []planmodifier.String{
-					replaceWhenExpired(),
-				},
-			},
-			"comment": schema.StringAttribute{
-				Description: "Reason for the silence.",
-				Required:    true,
-				PlanModifiers: []planmodifier.String{
-					replaceWhenExpired(),
-				},
-			},
-			"status": schema.StringAttribute{
-				Description: "Current state: active, pending, or expired.",
-				Computed:    true,
-			},
-			"updated_at": schema.StringAttribute{
-				Description: "Last updated time from API.",
-				Computed:    true,
-			},
-		},
+		Attributes:  silenceAttributes(),
 		Blocks: map[string]schema.Block{
 			"matchers": matchersBlock(),
+		},
+	}
+}
+
+func silenceAttributes() map[string]schema.Attribute {
+	attrs := map[string]schema.Attribute{
+		"id": schema.StringAttribute{
+			Description: "UUID assigned by the Alertmanager API.",
+			Computed:    true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.UseStateForUnknown(),
+			},
+		},
+		"created_by": schema.StringAttribute{
+			Description: "Author of the silence.",
+			Required:    true,
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+			},
+		},
+		"comment": schema.StringAttribute{
+			Description: "Reason for the silence.",
+			Required:    true,
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+			},
+		},
+		"status": schema.StringAttribute{
+			Description: "Current state: active, pending, or expired.",
+			Computed:    true,
+		},
+		"updated_at": schema.StringAttribute{
+			Description: "Last updated time from API.",
+			Computed:    true,
+		},
+	}
+
+	maps.Copy(attrs, timeAttributes())
+
+	return attrs
+}
+
+func timeAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"starts_at": schema.StringAttribute{
+			Description: "Start time in RFC3339 format.",
+			CustomType:  timetypes.RFC3339Type{},
+			Required:    true,
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+			},
+		},
+		"ends_at": schema.StringAttribute{
+			Description: "End time in RFC3339 format. " +
+				"Exactly one of ends_at or duration must be set.",
+			CustomType: timetypes.RFC3339Type{},
+			Optional:   true,
+			Computed:   true,
+			Validators: []validator.String{
+				stringvalidator.ExactlyOneOf(path.MatchRoot("duration")),
+			},
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+				computeEndsAtFromDuration(),
+			},
+		},
+		"duration": schema.StringAttribute{
+			Description: "Duration of the silence (e.g. \"6h\", \"30m\"). " +
+				"Exactly one of ends_at or duration must be set.",
+			Optional: true,
+			Validators: []validator.String{
+				durationValidator{},
+			},
+			PlanModifiers: []planmodifier.String{
+				replaceWhenExpired(),
+			},
 		},
 	}
 }
@@ -505,7 +519,7 @@ func (v durationValidator) ValidateString(
 		return
 	}
 
-	d, err := time.ParseDuration(req.ConfigValue.ValueString())
+	parsed, err := time.ParseDuration(req.ConfigValue.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
@@ -516,7 +530,7 @@ func (v durationValidator) ValidateString(
 		return
 	}
 
-	if d <= 0 {
+	if parsed <= 0 {
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
 			"Invalid duration",
@@ -585,7 +599,7 @@ func (m endsAtFromDurationModifier) PlanModifyString(
 		return
 	}
 
-	d, err := time.ParseDuration(duration.ValueString())
+	parsed, err := time.ParseDuration(duration.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(
 			req.Path,
@@ -596,6 +610,6 @@ func (m endsAtFromDurationModifier) PlanModifyString(
 		return
 	}
 
-	endTime := startTime.Add(d).UTC().Format(time.RFC3339)
+	endTime := startTime.Add(parsed).UTC().Format(time.RFC3339)
 	resp.PlanValue = timetypes.NewRFC3339ValueMust(endTime).StringValue
 }
