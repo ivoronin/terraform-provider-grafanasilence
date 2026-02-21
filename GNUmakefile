@@ -17,7 +17,12 @@ test-all: lint test testacc
 release:
 	goreleaser release --clean
 
+docs:
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs@latest generate --provider-name grafanasilence
+
+generate: docs
+
 clean:
 	rm -rf dist/
 
-.PHONY: build test testacc lint test-all release clean
+.PHONY: build test testacc lint test-all release docs generate clean
