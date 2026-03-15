@@ -227,10 +227,21 @@ func shiftTime(ts string) string {
 	return t.Add(time.Second).Format("2006-01-02T15:04:05.000Z07:00")
 }
 
-const testAccSilenceCreateConfig = `
+// testFutureTimes returns three RFC3339 timestamps computed relative to now:
+// a base time 24h in the future, base+6h, and base+12h.
+func testFutureTimes() (string, string, string) {
+	base := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+
+	return base.Format(time.RFC3339),
+		base.Add(6 * time.Hour).Format(time.RFC3339),
+		base.Add(12 * time.Hour).Format(time.RFC3339)
+}
+
+func testAccSilenceCreateConfig(startsAt, endsAt string) string {
+	return fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Test silence"
 
@@ -240,12 +251,14 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`
+`, startsAt, endsAt)
+}
 
-const testAccSilenceUpdateConfig = `
+func testAccSilenceUpdateConfig(startsAt, endsAt string) string {
+	return fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T12:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Updated test silence"
 
@@ -261,22 +274,25 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`
+`, startsAt, endsAt)
+}
 
 func TestAccSilenceResource(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
+
+	startsAt, endsAt6h, endsAt12h := testFutureTimes()
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			// Create and read
 			{
-				Config: testAccSilenceCreateConfig,
+				Config: testAccSilenceCreateConfig(startsAt, endsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "starts_at", "2026-03-01T00:00:00Z"),
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "starts_at", startsAt),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", endsAt6h),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "created_by", "terraform"),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "comment", "Test silence"),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
@@ -289,9 +305,9 @@ func TestAccSilenceResource(t *testing.T) {
 			},
 			// Update
 			{
-				Config: testAccSilenceUpdateConfig,
+				Config: testAccSilenceUpdateConfig(startsAt, endsAt12h),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T12:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", endsAt12h),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "comment", "Updated test silence"),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "matchers.#", "2"),
 				),
@@ -311,14 +327,16 @@ func TestAccSilenceResourceWithIsEqual(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, _ := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "negative" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Negative matcher test"
 
@@ -329,7 +347,7 @@ resource "grafanasilence_silence" "negative" {
     is_equal = false
   }
 }
-`,
+`, startsAt, endsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.negative", "matchers.0.is_equal", "false"),
 				),
@@ -442,10 +460,12 @@ func TestAccSilenceManualExpiry(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
-	config := `
+	startsAt, endsAt6h, _ := testFutureTimes()
+
+	config := fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Manual expiry test"
 
@@ -455,7 +475,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`
+`, startsAt, endsAt6h)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -486,10 +506,12 @@ func TestAccSilenceManualExpiryGone(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
-	config := `
+	startsAt, endsAt6h, _ := testFutureTimes()
+
+	config := fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Manual expiry gone test"
 
@@ -499,7 +521,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`
+`, startsAt, endsAt6h)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -567,16 +589,17 @@ func TestAccSilenceUpdateEndsAtToPast(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, _ := testFutureTimes()
 	pastEndsAt := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Update to past test"
 
@@ -586,7 +609,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt, endsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
 				),
@@ -624,6 +647,7 @@ func TestAccSilenceUpdateExpiredEndsAtToFuture(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	futureStartsAt, futureEndsAt6h, _ := testFutureTimes()
 	pastEndsAt := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
 
 	resource.Test(t, resource.TestCase{
@@ -652,10 +676,10 @@ resource "grafanasilence_silence" "test" {
 			},
 			// Update endsAt to future - Grafana creates a new silence with a new ID
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Update expired to future test"
 
@@ -665,7 +689,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, futureStartsAt, futureEndsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					// New ID assigned because Grafana created a new silence
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-2"),
@@ -816,6 +840,8 @@ func TestAccSilenceDeleteActive(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, _ := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
@@ -831,10 +857,10 @@ func TestAccSilenceDeleteActive(t *testing.T) {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "Delete active test"
 
@@ -844,7 +870,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt, endsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
@@ -859,13 +885,15 @@ func TestAccSilenceCreateWithDuration(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, _ := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
+  starts_at  = %q
   duration   = "6h"
   created_by = "terraform"
   comment    = "Duration test"
@@ -876,10 +904,10 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", endsAt6h),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "duration", "6h"),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
 				),
@@ -893,13 +921,15 @@ func TestAccSilenceUpdateDuration(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, endsAt12h := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
+  starts_at  = %q
   duration   = "6h"
   created_by = "terraform"
   comment    = "Duration update test"
@@ -910,15 +940,15 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", endsAt6h),
 				),
 			},
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
+  starts_at  = %q
   duration   = "12h"
   created_by = "terraform"
   comment    = "Duration update test"
@@ -929,9 +959,9 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T12:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", endsAt12h),
 				),
 			},
 		},
@@ -943,14 +973,16 @@ func TestAccSilenceConflictEndsAtAndDuration(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, _ := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   duration   = "6h"
   created_by = "terraform"
   comment    = "Conflict test"
@@ -961,7 +993,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt, endsAt6h),
 				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
 			},
 		},
@@ -973,13 +1005,15 @@ func TestAccSilenceMissingEndsAtAndDuration(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	startsAt, _, _ := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
+  starts_at  = %q
   created_by = "terraform"
   comment    = "Missing test"
 
@@ -989,7 +1023,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt),
 				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
 			},
 		},
@@ -1039,15 +1073,16 @@ func TestAccSilenceCreateWithEndsAtNoStartsAt(t *testing.T) {
 	server := newTestServer(t)
 	setupTestEnv(t, server)
 
+	_, endsAt6h, _ := testFutureTimes()
 	before := time.Now().UTC().Add(-1 * time.Second)
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  ends_at    = "2026-03-01T06:00:00Z"
+  ends_at    = %q
   created_by = "terraform"
   comment    = "EndsAt without starts_at"
 
@@ -1057,10 +1092,10 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, endsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
-					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", "2026-03-01T06:00:00Z"),
+					resource.TestCheckResourceAttr("grafanasilence_silence.test", "ends_at", endsAt6h),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
 					resource.TestCheckResourceAttrWith("grafanasilence_silence.test", "starts_at",
 						checkTimeNotBefore(before)),
@@ -1232,14 +1267,16 @@ func TestAccSilenceHAReplicationDelay(t *testing.T) {
 	server.getDelay = 2
 	setupTestEnv(t, server)
 
+	startsAt, endsAt6h, _ := testFutureTimes()
+
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: `
+				Config: fmt.Sprintf(`
 resource "grafanasilence_silence" "test" {
-  starts_at  = "2026-03-01T00:00:00Z"
-  ends_at    = "2026-03-01T06:00:00Z"
+  starts_at  = %q
+  ends_at    = %q
   created_by = "terraform"
   comment    = "HA replication delay test"
 
@@ -1249,7 +1286,7 @@ resource "grafanasilence_silence" "test" {
     is_regex = false
   }
 }
-`,
+`, startsAt, endsAt6h),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "id", "test-silence-1"),
 					resource.TestCheckResourceAttr("grafanasilence_silence.test", "status", "active"),
